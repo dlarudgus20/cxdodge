@@ -64,7 +64,8 @@ struct Bullet
 HBITMAP hBitmap = NULL;
 HBRUSH hbrBullet, hbrPlayer;
 
-bool bLose = false;
+DWORD StartTick;
+bool bLose;
 std::list<Bullet> bullets;
 POINT player;
 
@@ -86,6 +87,7 @@ LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT OnDestroy(HWND hWnd, WPARAM wParam, LPARAM lParam);
 
+void Reset(const RECT &rt);
 void CreateBullet(const RECT &rt, int x, int y);
 bool CheckLose();
 
@@ -120,15 +122,22 @@ LRESULT OnCreate(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	ReleaseDC(hWnd, hdc);
 
 	hbrBullet = CreateSolidBrush(RGB(255, 255, 255));
-	hbrPlayer = CreateSolidBrush(RGB(0, 255, 52));
+	hbrPlayer = CreateSolidBrush(RGB(0, 255, 255));
 
 	SetTimer(hWnd, MOVE_TIMER_ID, MOVE_TIMER_FREQ, NULL);
 	SetTimer(hWnd, CREATION_TIMER_ID, CREATION_TIMER_FREQ, NULL);
 
-	player.x = rt.right / 2;
-	player.y = rt.bottom / 2;
+	Reset(rt);
 
 	return 0;
+}
+
+void Reset(const RECT &rt)
+{
+	StartTick = GetTickCount();
+	bLose = false;
+	player.x = rt.right / 2;
+	player.y = rt.bottom / 2;
 }
 
 LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
@@ -160,6 +169,16 @@ LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
 
 		SelectObject(hMemDC, hOldBrush);
 		SelectObject(hMemDC, hOldPen);
+
+		SetTextColor(hMemDC, RGB(0, 255, 52));
+		TCHAR str[256];
+		DWORD time = GetTickCount() - StartTick;
+		wsprintf(str, L"%d.%03d sec", time / 1000, time % 1000);
+		if (bLose)
+		{
+			lstrcat(str, L" - click for restart");
+		}
+		TextOut(hMemDC, 0, 0, str, lstrlen(str));
 
 		BitBlt(hdc, 0, 0, WIDTH, HEIGHT, hMemDC, 0, 0, SRCCOPY);
 		SelectObject(hMemDC, hOldBit);
