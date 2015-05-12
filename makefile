@@ -53,7 +53,7 @@ CXX := i686-pc-mingw32-g++
 GDB := i686-pc-mingw32-gdb
 
 # flags
-CXXFLAGS := -std=c++0x -I$(DIR_SRC) -static \
+CXXFLAGS := -std=c++0x -I$(DIR_SRC) -static -mwindows \
 	-Wall -Wextra -Werror -Wno-unused-parameter \
 	-DUNICODE
 LIBS := -luser32 -lgdi32 -lkernel32
