@@ -1,9 +1,17 @@
 #include <windows.h>
+#include <stdio.h>
+#include <string.h>
 #include <math.h>
+#include <functional>
+#include <algorithm>
 #include <list>
 
+//#define DISABLE_RESTART
+
 const float PI = 3.141592653589793238;
+
 const LPCTSTR lpszClass = L"cxdodge";
+const LPCTSTR lpszTitle = L"cxdodge (right click or type 'q' for quit)";
 const int WIDTH = 320, HEIGHT = 240;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
@@ -33,7 +41,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInst, LPSTR lpCmdParam,
 	wc.style = CS_HREDRAW | CS_VREDRAW;
 	RegisterClass(&wc);
 
-	hWnd = CreateWindow(lpszClass, lpszClass,
+	hWnd = CreateWindow(lpszClass, lpszTitle,
 		WS_BORDER | WS_OVERLAPPED | WS_SYSMENU,
 		CW_USEDEFAULT, CW_USEDEFAULT, WIDTH, HEIGHT,
 		NULL, (HMENU)NULL, hInstance, NULL);
@@ -59,37 +67,47 @@ struct Bullet
 {
 	float x, y;
 	float dx, dy;
+	bool bHit;
 };
 
 HBITMAP hBitmap = NULL;
-HBRUSH hbrBullet, hbrPlayer;
+HBRUSH hbrBullet, hbrBulletHit;
+HBRUSH hbrPlayer;
 
-DWORD StartTick;
+DWORD StartTick, GameTime;
 bool bLose;
 std::list<Bullet> bullets;
 POINT player;
 
 const int DRAW_RADIUS = 3;
-const int HIT_RADIUS = 1;
+const int HIT_RADIUS = 2;
 
 const int PLAYER_SPEED = 1;
-const int BULLET_SPEED = 1;
+const int BULLET_FULL_ARRIVAL_TIME = 150;
 
-const int CREATION_GAP = 75;
+const int CREATION_GAP = 95;
 
 const int MOVE_TIMER_ID = 1;
 const int MOVE_TIMER_FREQ = 13;
 const int CREATION_TIMER_ID = 2;
 const int CREATION_TIMER_FREQ = 675;
 
+const UINT WM_MY_TRYSAVERANK = WM_USER + 1;
+
 LRESULT OnCreate(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam);
+LRESULT OnChar(HWND hWnd, WPARAM wParam, LPARAM lParam);
+LRESULT OnLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam);
+LRESULT OnRButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam);
+LRESULT OnMyTrySaveRank(HWND hWnd, WPARAM wParam, LPARAM lParam);
 LRESULT OnDestroy(HWND hWnd, WPARAM wParam, LPARAM lParam);
 
 void Reset(const RECT &rt);
+void UpdateGameTime();
 void CreateBullet(const RECT &rt, int x, int y);
 bool CheckLose();
+void TrySaveAndNotifyRank(HWND hWnd, int time);
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -99,6 +117,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam)
 		ONMSG(WM_CREATE, OnCreate);
 		ONMSG(WM_PAINT, OnPaint);
 		ONMSG(WM_TIMER, OnTimer);
+		ONMSG(WM_CHAR, OnChar);
+		ONMSG(WM_LBUTTONDOWN, OnLButtonDown);
+		ONMSG(WM_RBUTTONDOWN, OnRButtonDown);
+		ONMSG(WM_MY_TRYSAVERANK, OnMyTrySaveRank);
 		ONMSG(WM_DESTROY, OnDestroy);
 	}
 #undef ONMSG
@@ -109,19 +131,21 @@ LRESULT OnCreate(HWND hWnd, WPARAM wParam, LPARAM lParam)
 {
 	HBITMAP hOldBit;
 	HDC hdc, hMemDC;
+
 	RECT rt;
+	GetClientRect(hWnd, &rt);
 
 	hdc = GetDC(hWnd);
 	hMemDC = CreateCompatibleDC(hdc);
-	hBitmap = CreateCompatibleBitmap(hdc, WIDTH, HEIGHT);
+	hBitmap = CreateCompatibleBitmap(hdc, rt.right, rt.bottom);
 	hOldBit = (HBITMAP)SelectObject(hMemDC, hBitmap);
-	GetClientRect(hWnd, &rt);
 	FillRect(hMemDC, &rt, (HBRUSH)GetStockObject(BLACK_BRUSH));
 	SelectObject(hMemDC, hOldBit);
 	DeleteDC(hMemDC);
 	ReleaseDC(hWnd, hdc);
 
 	hbrBullet = CreateSolidBrush(RGB(255, 255, 255));
+	hbrBulletHit = CreateSolidBrush(RGB(255, 52, 25));
 	hbrPlayer = CreateSolidBrush(RGB(0, 255, 255));
 
 	SetTimer(hWnd, MOVE_TIMER_ID, MOVE_TIMER_FREQ, NULL);
@@ -135,9 +159,16 @@ LRESULT OnCreate(HWND hWnd, WPARAM wParam, LPARAM lParam)
 void Reset(const RECT &rt)
 {
 	StartTick = GetTickCount();
+	GameTime = 0;
 	bLose = false;
 	player.x = rt.right / 2;
 	player.y = rt.bottom / 2;
+	bullets.clear();
+}
+
+void UpdateGameTime()
+{
+	GameTime = GetTickCount() - StartTick;
 }
 
 LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
@@ -147,43 +178,62 @@ LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
 
 	if (hBitmap != NULL)
 	{
-		HBITMAP hOldBit;
-		HDC hdc, hMemDC;
-		RECT rt;
+		if (!bLose)
+			UpdateGameTime();
 
-		hdc = GetDC(hWnd);
-		hMemDC = CreateCompatibleDC(hdc);
-		hBitmap = CreateCompatibleBitmap(hdc, WIDTH, HEIGHT);
+		HBITMAP hOldBit;
+		HDC hMemDC;
+
+		RECT rt;
+		GetClientRect(hWnd, &rt);
+
+		hMemDC = CreateCompatibleDC(ps.hdc);
 		hOldBit = (HBITMAP)SelectObject(hMemDC, hBitmap);
 
-		GetClientRect(hWnd, &rt);
 		FillRect(hMemDC, &rt, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
 		HPEN hOldPen = (HPEN)SelectObject(hMemDC, GetStockObject(NULL_PEN));
-		HBRUSH hOldBrush = (HBRUSH)SelectObject(hMemDC, hbrPlayer);
+		HBRUSH hOldBrush = (HBRUSH)SelectObject(hMemDC, hbrBullet);
+		for (const Bullet &b : bullets)
+		{
+			if (!b.bHit)
+				DrawPointEllipse(hMemDC, (int)b.x, (int)b.y, DRAW_RADIUS);
+		}
+
+		SelectObject(hMemDC, hbrPlayer);
 		DrawPointEllipse(hMemDC, player.x, player.y, DRAW_RADIUS);
 
-		SelectObject(hMemDC, hbrBullet);
-		for (const Bullet &b : bullets)
-			DrawPointEllipse(hMemDC, (int)b.x, (int)b.y, DRAW_RADIUS);
+		if (bLose)
+		{
+			for (const Bullet &b : bullets)
+			{
+				if (b.bHit)
+				{
+					HBRUSH old = (HBRUSH)SelectObject(hMemDC, hbrBulletHit);
+					DrawPointEllipse(hMemDC, (int)b.x, (int)b.y, DRAW_RADIUS);
+					SelectObject(hMemDC, old);
+				}
+			}
+		}
 
 		SelectObject(hMemDC, hOldBrush);
 		SelectObject(hMemDC, hOldPen);
 
 		SetTextColor(hMemDC, RGB(0, 255, 52));
+		SetBkMode(hMemDC, TRANSPARENT);
 		TCHAR str[256];
-		DWORD time = GetTickCount() - StartTick;
-		wsprintf(str, L"%d.%03d sec", time / 1000, time % 1000);
+		wsprintf(str, L"%5d.%03d sec", GameTime / 1000, GameTime % 1000);
+#ifndef DISABLE_RESTART
 		if (bLose)
 		{
-			lstrcat(str, L" - click for restart");
+			lstrcat(str, L" - click or type ENTER for restart");
 		}
+#endif
 		TextOut(hMemDC, 0, 0, str, lstrlen(str));
 
-		BitBlt(hdc, 0, 0, WIDTH, HEIGHT, hMemDC, 0, 0, SRCCOPY);
+		BitBlt(ps.hdc, 0, 0, rt.right, rt.bottom, hMemDC, 0, 0, SRCCOPY);
 		SelectObject(hMemDC, hOldBit);
 		DeleteDC(hMemDC);
-		ReleaseDC(hWnd, hdc);
 	}
 
 	EndPaint(hWnd, &ps);
@@ -198,6 +248,8 @@ LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	RECT rt;
 	int x, y;
 
+	GetClientRect(hWnd, &rt);
+
 	switch (wParam)
 	{
 		case MOVE_TIMER_ID:
@@ -210,17 +262,22 @@ LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam)
 			if (GetAsyncKeyState(VK_DOWN) < 0)
 				player.y += PLAYER_SPEED;
 
-			for (Bullet &b : bullets)
+			for (auto it = bullets.begin(); it != bullets.end(); )
 			{
-				b.x += b.dx;
-				b.y += b.dy;
-			}
+				it->x += it->dx;
+				it->y += it->dy;
 
-			bLose = CheckLose();
-			InvalidateRect(hWnd, NULL, FALSE);
+				if ((it->x < 0 || it->x > rt.right) || (it->y < 0 || it->y > rt.bottom))
+				{
+					bullets.erase(it++);
+				}
+				else
+				{
+					++it;
+				}
+			}
 			break;
 		case CREATION_TIMER_ID:
-			GetClientRect(hWnd, &rt);
 			for (x = 0; x < rt.right; x += CREATION_GAP)
 			{
 				CreateBullet(rt, x, 0);
@@ -237,47 +294,106 @@ LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam)
 			{
 				CreateBullet(rt, 0, y);
 			}
-
-			bLose = CheckLose();
-			InvalidateRect(hWnd, NULL, FALSE);
 			break;
+	}
+
+	bLose = CheckLose();
+	if (bLose)
+		PostMessage(hWnd, WM_MY_TRYSAVERANK, 0, 0);
+	InvalidateRect(hWnd, NULL, FALSE);
+
+	return 0;
+}
+
+LRESULT OnChar(HWND hWnd, WPARAM wParam, LPARAM lParam)
+{
+	if (wParam == L'q' || wParam == L'Q' || wParam == L'ㅂ' || wParam == L'ㅃ')
+	{
+		SendMessage(hWnd, WM_CLOSE, 0, 0);
+	}
+	else if (wParam == L'\r')
+	{
+		if (bLose)
+		{
+			RECT rt;
+			GetClientRect(hWnd, &rt);
+			Reset(rt);
+		}
 	}
 	return 0;
 }
 
-// x = a cost
-// y = b sint
+LRESULT OnLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
+{
+#ifndef DISABLE_RESTART
+	if (bLose)
+	{
+		RECT rt;
+		GetClientRect(hWnd, &rt);
+		Reset(rt);
+	}
+#endif
+	return 0;
+}
+
+LRESULT OnRButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
+{
+	SendMessage(hWnd, WM_CLOSE, 0, 0);
+	return 0;
+}
+
 void CreateBullet(const RECT &rt, int x, int y)
 {
-	Bullet b;
-	b.x = x;
-	b.y = y;
+	const float kappa = 0.35f;
+
+	Bullet ret;
+	ret.x = x;
+	ret.y = y;
+	ret.bHit = false;
 
 	float d_x = player.x - x;
 	float d_y = player.y - y;
 	float d_length = sqrt(pow2(d_x) + pow2(d_y));
 
-	//float a = (float)rt.bottom / rt.right;
-	//float d_y0 = d_y / a;
-	//float theta = fmod(atan2(d_y0, d_x), PI / 2);
-	float speed = BULLET_SPEED/* * pow2(tan(-fabs(theta - PI / 4)))*/;
+	float a = 1.0f / (rt.right / 2);
+	float b = 1.0f / (rt.bottom / 2);
 
-	b.dx = d_x / d_length * speed;
-	b.dy = d_y / d_length * speed;
+	float x0 = fabs(a * (x - rt.right / 2)), y0 = fabs(b * (y - rt.bottom / 2));
+	float t = x0;
+	x0 = fmax(x0, y0);
+	y0 = fmin(t, y0);
 
-	bullets.push_back(b);
+	t = BULLET_FULL_ARRIVAL_TIME * (1 - kappa);
+	float calc = (kappa / sqrtf(pow2(y0) + 1)) - 1;
+	float v_x = calc / t;
+	float v_y = (calc * y0) / t;
+
+	float speed = sqrtf(pow2(v_x / a) + pow2(v_y / b));
+
+	ret.dx = d_x / d_length * speed;
+	ret.dy = d_y / d_length * speed;
+
+	bullets.push_back(ret);
 }
 
 bool CheckLose()
 {
+	bool ret = false;
 	for (Bullet &b : bullets)
 	{
 		if (pow2((int)b.x - player.x) + pow2((int)b.y - player.y) <= pow2(HIT_RADIUS))
 		{
-			return true;
+			b.bHit = true;
+			ret = true;
 		}
 	}
-	return false;
+	return ret;
+}
+
+LRESULT OnMyTrySaveRank(HWND hWnd, WPARAM wParam, LPARAM lParam)
+{
+	TrySaveAndNotifyRank(hWnd, GameTime);
+	return 0;
 }
 
 LRESULT OnDestroy(HWND hWnd, WPARAM wParam, LPARAM lParam)
@@ -285,9 +401,96 @@ LRESULT OnDestroy(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	KillTimer(hWnd, MOVE_TIMER_ID);
 	KillTimer(hWnd, CREATION_TIMER_ID);
 
+	DeleteObject(hbrBullet);
+	DeleteObject(hbrPlayer);
 	DeleteObject(hBitmap);
 	hBitmap = NULL;
 
 	PostQuitMessage(0);
 	return 0;
+}
+
+void TrySaveAndNotifyRank(HWND hWnd, int time)
+{
+	const char * const fname = "rank.txt";
+
+	int score[5] = { 0 }, idx = 0;
+	int * const begin = &score[0];
+	int * const end = &score[sizeof(score) / sizeof(score[0])];
+
+	FILE *pf = fopen(fname, "r");
+	if (pf == NULL)
+		pf = fopen(fname, "w+");
+
+	if (pf != NULL)
+	{
+		while (!ferror(pf))
+		{
+			fscanf(pf, "%d", &score[idx++]);
+			if (idx >= 5)
+				break;
+		}
+		if (!(!feof(pf) && idx == 5))
+		{
+			for (int &s : score)
+				s = 0;
+		}
+
+		fclose(pf);
+	}
+
+	auto it = std::upper_bound(begin, end, time, std::greater<int>());
+	int rank = -1;
+	if (it != end)
+	{
+		rank = it - begin + 1;
+
+		for (int tmp = time; it != end; ++it)
+		{
+			std::swap(*it, tmp);
+		}
+
+		pf = fopen(fname, "w");
+		if (pf != NULL)
+		{
+			idx = 0;
+			while (!ferror(pf))
+			{
+				fprintf(pf, "%d ", score[idx++]);
+				if (idx >= 5)
+					break;
+			}
+			if (ferror(pf))
+			{
+				MessageBox(hWnd, L"랭킹 저장 중 에러가 발생하였습니다.", L"에러", MB_ICONERROR | MB_OK);
+			}
+			fclose(pf);
+		}
+		else
+		{
+			MessageBox(hWnd, L"랭킹 파일을 열 수 없습니다.", L"에러", MB_ICONERROR | MB_OK);
+		}
+	}
+
+	TCHAR msg[512];
+	wsprintf(msg,
+		L"1위; %5d.%03d sec\n"
+		L"2위; %5d.%03d sec\n"
+		L"3위; %5d.%03d sec\n"
+		L"4위; %5d.%03d sec\n"
+		L"5위; %5d.%03d sec\n",
+		score[0] / 1000, score[0] % 1000,
+		score[1] / 1000, score[1] % 1000,
+		score[2] / 1000, score[2] % 1000,
+		score[3] / 1000, score[3] % 1000,
+		score[4] / 1000, score[4] % 1000
+		);
+	if (rank != -1)
+	{
+		TCHAR msg2[128];
+		wsprintf(msg2, L"\n\n%d위를 달성했습니다!", rank);
+		lstrcat(msg, msg2);
+	}
+
+	MessageBox(hWnd, msg, L"순위표", MB_OK);
 }
