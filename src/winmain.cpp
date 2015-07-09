@@ -23,6 +23,8 @@ inline void DrawPointEllipse(HDC hdc, int x, int y, int radius)
 template <typename T>
 inline T pow2(const T &x) { return x*x; }
 
+inline int range(int min, int value, int max) { return (min < value) ? (value < max ? value : max) : min; }
+
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInst, LPSTR lpCmdParam, int nCmdShow)
 {
 	WNDCLASS wc;
@@ -81,6 +83,7 @@ POINT player;
 
 const int DRAW_RADIUS = 3;
 const int HIT_RADIUS = 2;
+const int MOVE_LIMIT = 2;
 
 const int PLAYER_SPEED = 1;
 const int BULLET_FULL_ARRIVAL_TIME = 150;
@@ -261,6 +264,9 @@ LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam)
 				player.x += PLAYER_SPEED;
 			if (GetAsyncKeyState(VK_DOWN) < 0)
 				player.y += PLAYER_SPEED;
+
+			player.x = range(MOVE_LIMIT, player.x, rt.right - MOVE_LIMIT);
+			player.y = range(MOVE_LIMIT, player.y, rt.bottom - MOVE_LIMIT);
 
 			for (auto it = bullets.begin(); it != bullets.end(); )
 			{
