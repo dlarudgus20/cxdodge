@@ -6,12 +6,17 @@
 #include <algorithm>
 #include <list>
 
-//#define DISABLE_RESTART
+#ifndef NDEBUG
+#define TRACE(format, ...) do { fprintf(stderr, format, ##__VA_ARGS__); fflush(stderr); } while (0)
+#else
+#define TRACE(format, ...)
+#endif
 
 const float PI = 3.141592653589793238;
 
 const LPCTSTR lpszClass = L"cxdodge";
-const LPCTSTR lpszTitle = L"cxdodge (right click or type 'q' for quit)";
+const LPCTSTR lpszTitleSingle = L"cxdodge (press 'm' for dual mode)";
+const LPCTSTR lpszTitleDual = L"cxdodge (press 'm' for single mode)";
 const int WIDTH = 320, HEIGHT = 240;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT iMsg, WPARAM wParam, LPARAM lParam);
@@ -43,7 +48,7 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInst, LPSTR lpCmdParam,
 	wc.style = CS_HREDRAW | CS_VREDRAW;
 	RegisterClass(&wc);
 
-	hWnd = CreateWindow(lpszClass, lpszTitle,
+	hWnd = CreateWindow(lpszClass, lpszTitleSingle,
 		WS_BORDER | WS_OVERLAPPED | WS_SYSMENU,
 		CW_USEDEFAULT, CW_USEDEFAULT, WIDTH, HEIGHT,
 		NULL, (HMENU)NULL, hInstance, NULL);
@@ -74,12 +79,15 @@ struct Bullet
 
 HBITMAP hBitmap = NULL;
 HBRUSH hbrBullet, hbrBulletHit;
-HBRUSH hbrPlayer;
+HBRUSH hbrPlayer1, hbrPlayer2;
 
 DWORD StartTick, GameTime;
 bool bLose;
 std::list<Bullet> bullets;
-POINT player;
+POINT player1, player2;
+bool bDie1, bDie2;
+int winner = -1;
+bool bSingle = true;
 
 const int DRAW_RADIUS = 3;
 const int HIT_RADIUS = 2;
@@ -108,7 +116,7 @@ LRESULT OnDestroy(HWND hWnd, WPARAM wParam, LPARAM lParam);
 
 void Reset(const RECT &rt);
 void UpdateGameTime();
-void CreateBullet(const RECT &rt, int x, int y);
+void CreateBullet(const RECT &rt, int x, int y, const POINT &player);
 bool CheckLose();
 void TrySaveAndNotifyRank(HWND hWnd, int time);
 
@@ -149,7 +157,8 @@ LRESULT OnCreate(HWND hWnd, WPARAM wParam, LPARAM lParam)
 
 	hbrBullet = CreateSolidBrush(RGB(255, 255, 255));
 	hbrBulletHit = CreateSolidBrush(RGB(255, 52, 25));
-	hbrPlayer = CreateSolidBrush(RGB(0, 255, 255));
+	hbrPlayer1 = CreateSolidBrush(RGB(0, 255, 255));
+	hbrPlayer2 = CreateSolidBrush(RGB(0, 255, 0));
 
 	SetTimer(hWnd, MOVE_TIMER_ID, MOVE_TIMER_FREQ, NULL);
 	SetTimer(hWnd, CREATION_TIMER_ID, CREATION_TIMER_FREQ, NULL);
@@ -161,11 +170,14 @@ LRESULT OnCreate(HWND hWnd, WPARAM wParam, LPARAM lParam)
 
 void Reset(const RECT &rt)
 {
+	TRACE("Reset()\n");
+
 	StartTick = GetTickCount();
 	GameTime = 0;
 	bLose = false;
-	player.x = rt.right / 2;
-	player.y = rt.bottom / 2;
+	bDie1 = bDie2 = false;
+	player1.x = player2.x = rt.right / 2;
+	player1.y = player2.y = rt.bottom / 2;
 	bullets.clear();
 }
 
@@ -203,10 +215,15 @@ LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
 				DrawPointEllipse(hMemDC, (int)b.x, (int)b.y, DRAW_RADIUS);
 		}
 
-		SelectObject(hMemDC, hbrPlayer);
-		DrawPointEllipse(hMemDC, player.x, player.y, DRAW_RADIUS);
+		SelectObject(hMemDC, hbrPlayer1);
+		DrawPointEllipse(hMemDC, player1.x, player1.y, DRAW_RADIUS);
+		if (!bSingle)
+		{
+			SelectObject(hMemDC, hbrPlayer2);
+			DrawPointEllipse(hMemDC, player2.x, player2.y, DRAW_RADIUS);
+		}
 
-		if (bLose)
+		if (bDie1 || bDie2)
 		{
 			for (const Bullet &b : bullets)
 			{
@@ -226,12 +243,10 @@ LRESULT OnPaint(HWND hWnd, WPARAM wParam, LPARAM lParam)
 		SetBkMode(hMemDC, TRANSPARENT);
 		TCHAR str[256];
 		wsprintf(str, L"%5d.%03d sec", GameTime / 1000, GameTime % 1000);
-#ifndef DISABLE_RESTART
 		if (bLose)
 		{
 			lstrcat(str, L" - click or type ENTER for restart");
 		}
-#endif
 		TextOut(hMemDC, 0, 0, str, lstrlen(str));
 
 		BitBlt(ps.hdc, 0, 0, rt.right, rt.bottom, hMemDC, 0, 0, SRCCOPY);
@@ -256,49 +271,78 @@ LRESULT OnTimer(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	switch (wParam)
 	{
 		case MOVE_TIMER_ID:
-			if (GetAsyncKeyState(VK_LEFT) < 0)
-				player.x -= PLAYER_SPEED;
-			if (GetAsyncKeyState(VK_UP) < 0)
-				player.y -= PLAYER_SPEED;
-			if (GetAsyncKeyState(VK_RIGHT) < 0)
-				player.x += PLAYER_SPEED;
-			if (GetAsyncKeyState(VK_DOWN) < 0)
-				player.y += PLAYER_SPEED;
-
-			player.x = range(MOVE_LIMIT, player.x, rt.right - MOVE_LIMIT);
-			player.y = range(MOVE_LIMIT, player.y, rt.bottom - MOVE_LIMIT);
+			if (!bDie1)
+			{
+				if (GetAsyncKeyState(VK_LEFT) < 0)
+					player1.x -= PLAYER_SPEED;
+				if (GetAsyncKeyState(VK_UP) < 0)
+					player1.y -= PLAYER_SPEED;
+				if (GetAsyncKeyState(VK_RIGHT) < 0)
+					player1.x += PLAYER_SPEED;
+				if (GetAsyncKeyState(VK_DOWN) < 0)
+					player1.y += PLAYER_SPEED;
+				player1.x = range(MOVE_LIMIT, player1.x, rt.right - MOVE_LIMIT);
+				player1.y = range(MOVE_LIMIT, player1.y, rt.bottom - MOVE_LIMIT);
+			}
+			if (!bDie2)
+			{
+				if (GetAsyncKeyState(L'A') < 0)
+					player2.x -= PLAYER_SPEED;
+				if (GetAsyncKeyState(L'W') < 0)
+					player2.y -= PLAYER_SPEED;
+				if (GetAsyncKeyState(L'D') < 0)
+					player2.x += PLAYER_SPEED;
+				if (GetAsyncKeyState(L'S') < 0)
+					player2.y += PLAYER_SPEED;
+				player2.x = range(MOVE_LIMIT, player2.x, rt.right - MOVE_LIMIT);
+				player2.y = range(MOVE_LIMIT, player2.y, rt.bottom - MOVE_LIMIT);
+			}
 
 			for (auto it = bullets.begin(); it != bullets.end(); )
 			{
-				it->x += it->dx;
-				it->y += it->dy;
+				if (!it->bHit)
+				{
+					it->x += it->dx;
+					it->y += it->dy;
 
-				if ((it->x < 0 || it->x > rt.right) || (it->y < 0 || it->y > rt.bottom))
-				{
-					bullets.erase(it++);
+					if ((it->x < 0 || it->x > rt.right) || (it->y < 0 || it->y > rt.bottom))
+					{
+						bullets.erase(it++);
+						continue;
+					}
 				}
-				else
-				{
-					++it;
-				}
+
+				++it;
 			}
 			break;
 		case CREATION_TIMER_ID:
+			POINT *players[2] = { &player1, &player2 };
+			int idx = 0;
+
+			if (bSingle || bDie2)
+				players[1] = players[0];
+			else if (bDie1)
+				players[0] = players[1];
+
 			for (x = 0; x < rt.right; x += CREATION_GAP)
 			{
-				CreateBullet(rt, x, 0);
+				CreateBullet(rt, x, 0, *players[idx]);
+				idx = (idx + 1) % 2;
 			}
 			for (y = x - rt.right; y < rt.bottom; y += CREATION_GAP)
 			{
-				CreateBullet(rt, rt.right, y);
+				CreateBullet(rt, rt.right, y, *players[idx]);
+				idx = (idx + 1) % 2;
 			}
 			for (x = rt.right - (y - rt.bottom); x >= 0; x -= CREATION_GAP)
 			{
-				CreateBullet(rt, x, rt.bottom);
+				CreateBullet(rt, x, rt.bottom, *players[idx]);
+				idx = (idx + 1) % 2;
 			}
 			for (y = rt.right - (-x); y >= 0; y -= CREATION_GAP)
 			{
-				CreateBullet(rt, 0, y);
+				CreateBullet(rt, 0, y, *players[idx]);
+				idx = (idx + 1) % 2;
 			}
 			break;
 	}
@@ -326,19 +370,31 @@ LRESULT OnChar(HWND hWnd, WPARAM wParam, LPARAM lParam)
 			Reset(rt);
 		}
 	}
+	else if (wParam == L'm' || wParam == L'M')
+	{
+		bSingle = !bSingle;
+
+		if (bSingle)
+			SetWindowText(hWnd, lpszTitleSingle);
+		else
+			SetWindowText(hWnd, lpszTitleDual);
+
+		RECT rt;
+		GetClientRect(hWnd, &rt);
+		Reset(rt);
+	}
 	return 0;
 }
 
 LRESULT OnLButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
 {
-#ifndef DISABLE_RESTART
 	if (bLose)
 	{
 		RECT rt;
 		GetClientRect(hWnd, &rt);
 		Reset(rt);
 	}
-#endif
+
 	return 0;
 }
 
@@ -348,7 +404,7 @@ LRESULT OnRButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	return 0;
 }
 
-void CreateBullet(const RECT &rt, int x, int y)
+void CreateBullet(const RECT &rt, int x, int y, const POINT &player)
 {
 	const float kappa = 0.35f;
 
@@ -384,16 +440,38 @@ void CreateBullet(const RECT &rt, int x, int y)
 
 bool CheckLose()
 {
-	bool ret = false;
 	for (Bullet &b : bullets)
 	{
-		if (pow2((int)b.x - player.x) + pow2((int)b.y - player.y) <= pow2(HIT_RADIUS))
+		if (!b.bHit)
 		{
-			b.bHit = true;
-			ret = true;
+			if (!bDie1)
+			{
+				if (pow2((int)b.x - player1.x) + pow2((int)b.y - player1.y) <= pow2(HIT_RADIUS))
+				{
+					b.bHit = true;
+					bDie1 = true;
+				}
+			}
+			if (!bDie2 && !bSingle)
+			{
+				if (pow2((int)b.x - player2.x) + pow2((int)b.y - player2.y) <= pow2(HIT_RADIUS))
+				{
+					b.bHit = true;
+					bDie2 = true;
+				}
+			}
 		}
 	}
-	return ret;
+
+	if (!bSingle)
+	{
+		if (!bDie1 && bDie2)
+			winner = 1;
+		else if (bDie1 && !bDie2)
+			winner = 2;
+	}
+
+	return bDie1 && (bDie2 || bSingle);
 }
 
 LRESULT OnMyTrySaveRank(HWND hWnd, WPARAM wParam, LPARAM lParam)
@@ -408,7 +486,8 @@ LRESULT OnDestroy(HWND hWnd, WPARAM wParam, LPARAM lParam)
 	KillTimer(hWnd, CREATION_TIMER_ID);
 
 	DeleteObject(hbrBullet);
-	DeleteObject(hbrPlayer);
+	DeleteObject(hbrPlayer1);
+	DeleteObject(hbrPlayer2);
 	DeleteObject(hBitmap);
 	hBitmap = NULL;
 
@@ -478,13 +557,23 @@ void TrySaveAndNotifyRank(HWND hWnd, int time)
 		}
 	}
 
+	TCHAR strWinner[128] = L"";
+	if (!bSingle)
+	{
+		if (winner != -1)
+			wsprintf(strWinner, L"플레이어 %d 님이 우승하였습니다!\n\n", winner);
+		else
+			lstrcpy(strWinner, L"비겼습니다!\n\n");
+	}
 	TCHAR msg[512];
 	wsprintf(msg,
+		L"%s"
 		L"1위; %5d.%03d sec\n"
 		L"2위; %5d.%03d sec\n"
 		L"3위; %5d.%03d sec\n"
 		L"4위; %5d.%03d sec\n"
 		L"5위; %5d.%03d sec\n",
+		strWinner,
 		score[0] / 1000, score[0] % 1000,
 		score[1] / 1000, score[1] % 1000,
 		score[2] / 1000, score[2] % 1000,

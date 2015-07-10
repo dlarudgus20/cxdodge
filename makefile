@@ -50,7 +50,7 @@ DIR_DEPENS := $(DIR_BIN) $(DIR_DEP) $(DIR_OBJ)
 
 # tools
 CXX := i686-pc-mingw32-g++
-GDB := i686-pc-mingw32-gdb
+GDB := gdb
 
 # flags
 CXXFLAGS := -std=c++0x -I$(DIR_SRC) -static -mwindows \
@@ -90,9 +90,9 @@ rerun:
 	make clean
 	make run
 
-run-dbg:
+dbg:
 	make all
-	$(TARGET_GDB) $(OUTPUT_FILE)
+	$(GDB) $(OUTPUT_FILE)
 
 distclean: clean
 	-rmdir $(DIR_OBJ)
